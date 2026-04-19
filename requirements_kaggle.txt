@@ -1,0 +1,24 @@
+# ── Mamba Models: Kaggle Requirements ──────────────────────────────────────
+# Install with: pip install -r requirements_kaggle.txt
+
+# Core Mamba
+mamba-ssm
+causal-conv1d
+
+# Vision & Deep Learning
+torch>=2.0.0
+torchvision
+timm
+einops
+mambavision           # NVlabs MambaVision pip package
+
+# Data handling
+pandas
+openpyxl
+scikit-learn
+pillow
+
+# Utilities
+matplotlib
+tqdm
+nbformat

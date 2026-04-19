@@ -26,7 +26,34 @@ def build_model(img_size: int = 224):
     vmamba_py = os.path.join(_THIS_DIR, "vmamba.py")
 
     try:
-        import importlib.util
+        import importlib.util, types
+
+        # fvcore is used by vmamba.py only for optional FLOP counting.
+        # Mock it so the import succeeds on machines where fvcore is absent.
+        def _mock_module(name):
+            m = types.ModuleType(name)
+            sys.modules.setdefault(name, m)
+            return m
+
+        _fv     = _mock_module("fvcore")
+        _fv_nn  = _mock_module("fvcore.nn")
+        _fv_jit = _mock_module("fvcore.nn.jit_handles")
+
+        # vmamba.py line: from fvcore.nn import FlopCountAnalysis, flop_count_str,
+        #                                       flop_count, parameter_count
+        class _FlopCountAnalysis:
+            def __init__(self, *a, **kw): pass
+            def total(self, *a, **kw): return 0
+            def by_module(self, *a, **kw): return {}
+        _fv_nn.FlopCountAnalysis  = _FlopCountAnalysis
+        _fv_nn.flop_count_str     = lambda *a, **kw: ""
+        _fv_nn.flop_count         = lambda *a, **kw: {}
+        _fv_nn.parameter_count    = lambda *a, **kw: {}
+        _fv_jit.get_shape                 = lambda *a, **kw: None
+        _fv_jit.generic_activation_jit    = lambda *a, **kw: None
+        _fv_nn.jit_handles = _fv_jit
+        _fv.nn = _fv_nn
+
         spec = importlib.util.spec_from_file_location("_vmamba_mod", vmamba_py)
         mod  = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

@@ -77,7 +77,7 @@ class _PureMamba(nn.Module):
                          device=x.device, dtype=x.dtype)
         ys = []
         for i in range(L):
-            h = dA[:, i] * h + dB[:, i] * x_[:, i:i+1].unsqueeze(-1)
+            h = dA[:, i] * h + dB[:, i] * x_[:, i].unsqueeze(-1)
             ys.append((h * C[:, i].unsqueeze(1)).sum(-1))
 
         y = torch.stack(ys, dim=1) + x_ * self.D

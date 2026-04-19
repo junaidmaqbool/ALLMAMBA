@@ -53,7 +53,7 @@ def build_model(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
                 h   = max(16, d_model // 2)
                 cfg = Mamba3Config(
                     d_model=d_model, n_layer=1, d_state=32,
-                    expand=2, headdim=h, chunk_size=64, use_mimo=False)
+                    expand=2, headdim=h, chunk_size=1, use_mimo=False)
                 self.ssm  = Mamba3(cfg)
                 self.norm = nn.LayerNorm(d_model)
 

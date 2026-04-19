@@ -13,8 +13,62 @@ from .cross_attention import CrossAttention
 
 try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
-except:
-    pass
+except Exception:
+    # ── Pure-PyTorch fallback ────────────────────────────────────────────────
+    # Called by SS_Conv_SSM.ssm() with:
+    #   u   : (B, d_inner, L)          -- input
+    #   delta: (B, d_inner, L)         -- time-step
+    #   A   : (d_inner, d_state)       -- already negative
+    #   B   : (B, 1, d_state, L)       -- K=1 single-direction scan
+    #   C   : (B, 1, d_state, L)
+    #   D   : (d_inner,)               -- skip
+    #   z=None, delta_softplus=True, return_last_state=False
+    def selective_scan_fn(u, delta, A, B, C, D,
+                          z=None, delta_bias=None, delta_softplus=False,
+                          return_last_state=False):
+        """Pure-PyTorch ZOH selective scan (no CUDA kernel required)."""
+        Bsz, d_inner, L = u.shape
+        d_state = A.shape[-1]
+
+        if delta_bias is not None:
+            delta = delta + delta_bias.unsqueeze(-1)
+        if delta_softplus:
+            delta = F.softplus(delta)
+
+        # Squeeze the K=1 scan-direction dim: (B,1,d_state,L) -> (B,d_state,L)
+        Bm = B.squeeze(1) if B.dim() == 4 else B   # (B, d_state, L)
+        Cm = C.squeeze(1) if C.dim() == 4 else C   # (B, d_state, L)
+
+        # Discretise: dA[b,d,l,n] = exp(delta[b,d,l] * A[d,n])
+        #             dB[b,d,l,n] = delta[b,d,l] * Bm[b,n,l]
+        dA = torch.exp(
+            delta.unsqueeze(-1) *               # (B, d_inner, L, 1)
+            A.unsqueeze(0).unsqueeze(2)         # (1, d_inner, 1,  d_state)
+        )                                       # (B, d_inner, L, d_state)
+        dB = (
+            delta.unsqueeze(-1) *               # (B, d_inner, L, 1)
+            Bm.permute(0, 2, 1).unsqueeze(1)   # (B, 1,       L, d_state)
+        )                                       # (B, d_inner, L, d_state)
+
+        # Recurrence over L (L ≤ 49 for 7×7 feature maps — cheap)
+        h = u.new_zeros(Bsz, d_inner, d_state)
+        ys = []
+        for i in range(L):
+            h = dA[:, :, i] * h + dB[:, :, i] * u[:, :, i].unsqueeze(-1)
+            # y[b,d] = Σ_n Cm[b,n,i] * h[b,d,n]
+            y = (h * Cm[:, :, i].unsqueeze(1)).sum(-1)   # (B, d_inner)
+            ys.append(y)
+
+        out = torch.stack(ys, dim=-1).float()            # (B, d_inner, L)
+        if D is not None:
+            out = out + u.float() * D.view(1, -1, 1)
+
+        if return_last_state:
+            return out, h
+        return out
+
+    selective_scan_ref = selective_scan_fn
+    # ────────────────────────────────────────────────────────────────────────
 
 
 DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"

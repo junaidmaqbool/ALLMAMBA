@@ -1,0 +1,31 @@
+MODEL:
+  TYPE: vmamba2
+  NAME: vssd_tiny
+  DROP_PATH_RATE: 0.2
+  VMAMBA2:
+    EMBED_DIM: 96
+    DEPTHS: [ 2, 2, 8, 2]
+    NUM_HEADS: [4, 4, 8, 16]
+    SIMPLE_DOWNSAMPLE: False
+    SIMPLE_PATCH_EMBED: False
+    SSD_EXPANSION: 1
+    SSD_CHUNK_SIZE: 256
+    LINEAR_ATTN_DUALITY: True
+    SSD_POSITIVE_DA: True
+    ATTN_TYPES: ['mamba2', 'mamba2', 'mamba2', 'standard']
+    DROP_PATH_RATE: 0.2
+    ASYNC_STATE: [12, 24, 48, 64]
+    MLP_RATIO: 3.0
+    RMT_DOWNSAMPLE: True
+    RMT_PATCH_EMBED: True
+    USE_CPE: True
+    SSD_LINEAR_NORM: True
+    EXP_DA: True
+    ROPE: True
+  DDP: 'torch'
+
+TRAIN:
+  EPOCHS: 300
+  WARMUP_EPOCHS: 20
+
+

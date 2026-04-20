@@ -476,19 +476,30 @@ class SS_Conv_SSM(nn.Module):
         )
 
         self.drop_path = DropPath(drop_path)
+        self.decoder = decoder
 
         if decoder:
-            self.cattn = CrossAttention(hidden_dim//2, key_dim=hidden_dim//2, value_dim=hidden_dim//2)
+            # skip connection has hidden_dim//2 channels; project to match hidden_dim
+            self.skip_proj = nn.Linear(hidden_dim // 2, hidden_dim)
+            self.cattn = CrossAttention(hidden_dim, key_dim=hidden_dim // 2, value_dim=hidden_dim // 2)
 
         self.decompsition = series_decomp(kernel_size)
 
     def forward(self, input: torch.Tensor, last_input=None):
-        if last_input is None:
-            x = input
+        if last_input is not None and self.decoder:
+            # Match spatial resolution: skip connection may have larger H, W
+            if last_input.shape[1:3] != input.shape[1:3]:
+                last_input = F.interpolate(
+                    last_input.permute(0, 3, 1, 2).float(),
+                    size=(input.shape[1], input.shape[2]),
+                    mode='bilinear', align_corners=False
+                ).permute(0, 2, 3, 1).to(input.dtype)
+            # Project skip channels from hidden_dim//2 to hidden_dim
+            last_input = self.skip_proj(last_input)
+            # Cross-attention fusion with residual
+            x = self.cattn(input, last_input) + input
         else:
-            x = self.cattn(input, last_input)       # x(768)
-
-        x = input
+            x = input
         remainder_x, trend_x = self.decompsition(x)
 
         remainder_x = remainder_x.permute(0,3,1,2).contiguous()

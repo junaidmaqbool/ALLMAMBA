@@ -77,7 +77,6 @@ class Cross_Attention(nn.Module):
             value = values[:, i*head_value_channels:(i+1)*head_value_channels, :]           # (B, dv, L)
 
             # context = key^T @ value  →  (B, dk, dv)
-            context = torch.cat([key, query], dim=0)   # placeholder — use einsum
             context = torch.einsum('bdk,bvk->bdv', key, value)  # (B, dk, dv)
             attended_value = torch.einsum('bdv,bdl->bvl', context, query)  # (B, dv, L)
             attended_values.append(attended_value)
@@ -104,33 +103,29 @@ class CrossAttention(nn.Module):
     def __init__(self, in_dim: int, key_dim: int, value_dim: int,
                  head_count: int = 1, token_mlp: bool = True):
         super().__init__()
-        self.linear = nn.Linear(in_dim, key_dim)
-        self.norm1  = nn.LayerNorm(in_dim)
-        self.attn   = Cross_Attention(key_dim, value_dim, head_count)
-        self.norm2  = nn.LayerNorm(in_dim)
-        self.mlp    = skip_ffn(in_dim, int(in_dim * 2)) if token_mlp else nn.Identity()
+        self.norm1    = nn.LayerNorm(in_dim)
+        self.linear   = nn.Linear(in_dim, key_dim)
+        self.attn     = Cross_Attention(key_dim, value_dim, head_count)
+        # project attention output (key_dim) back to in_dim for residual connection
+        self.out_proj = nn.Linear(key_dim, in_dim) if key_dim != in_dim else nn.Identity()
+        self.norm2    = nn.LayerNorm(in_dim)
+        self.mlp      = skip_ffn(in_dim, int(in_dim * 2)) if token_mlp else nn.Identity()
 
     def forward(self, x1: Tensor, x2: Tensor) -> Tensor:
         """
-        x1: decoder input  (B, H, W, C)
-        x2: encoder skip   (B, H, W, C)
-        Returns: (B, H, W, C)
+        x1: decoder input  (B, H, W, in_dim)
+        x2: encoder skip   (B, H, W, in_dim)  [projected to in_dim before calling]
+        Returns: (B, H, W, in_dim)
         """
-        B, H, W, C = x1.size()
+        # Normalize both inputs and project down to key_dim for attention
+        n1 = self.linear(self.norm1(x1))    # (B, H, W, key_dim)
+        n2 = self.linear(self.norm1(x2))    # (B, H, W, key_dim)
 
-        norm_1 = self.norm1(x1)
-        norm_2 = self.norm1(x2)
+        attn = self.attn(n1, n2)            # (B, H, W, key_dim)
+        attn = self.out_proj(attn)          # (B, H, W, in_dim)
 
-        # Project to key_dim
-        norm_1 = self.linear(norm_1)
-        norm_2 = self.linear(norm_2)
+        tx = attn + x1                      # residual in in_dim space
 
-        attn     = self.attn(norm_1, norm_2)         # (B, H, W, key_dim)
-        residual = x1[:, :, :, :attn.shape[-1]]      # align dims if needed
-        if attn.shape == x1.shape:
-            tx = attn + x1
-        else:
-            tx = attn                                 # fallback: no residual if dims differ
-
-        mx = self.mlp(self.norm2(tx)) if isinstance(self.mlp, skip_ffn) else tx
-        return mx
+        if isinstance(self.mlp, skip_ffn):
+            return self.mlp(self.norm2(tx))
+        return tx

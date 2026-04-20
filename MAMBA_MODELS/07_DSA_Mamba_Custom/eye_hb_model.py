@@ -76,7 +76,7 @@ class Cross_Attention(nn.Module):
             k = F.softmax(keys[:,   i*hk:(i+1)*hk, :], dim=2)
             q = F.softmax(queries[:, i*hk:(i+1)*hk, :], dim=1)
             v = values[:, i*hv:(i+1)*hv, :]
-            ctx = torch.einsum("bdk,bvk->bdv", k, v)
+            ctx = torch.einsum('bdk,bvk->bdv', k, v)
             attended.append(torch.einsum("bdv,bdl->bvl", ctx, q))
         agg = torch.cat(attended, dim=1).reshape(B, -1, H, W)
         return self.norm(self.reprojection(agg).permute(0, 2, 3, 1))
@@ -84,16 +84,17 @@ class Cross_Attention(nn.Module):
 class CrossAttention(nn.Module):
     def __init__(self, in_dim, key_dim, value_dim, head_count=1, token_mlp=True):
         super().__init__()
-        self.linear = nn.Linear(in_dim, key_dim)
-        self.norm1  = nn.LayerNorm(in_dim)
-        self.attn   = Cross_Attention(key_dim, value_dim, head_count)
-        self.norm2  = nn.LayerNorm(in_dim)
-        self.mlp    = skip_ffn(in_dim, int(in_dim * 2)) if token_mlp else nn.Identity()
+        self.norm1    = nn.LayerNorm(in_dim)
+        self.linear   = nn.Linear(in_dim, key_dim)
+        self.attn     = Cross_Attention(key_dim, value_dim, head_count)
+        self.out_proj = nn.Linear(key_dim, in_dim) if key_dim != in_dim else nn.Identity()
+        self.norm2    = nn.LayerNorm(in_dim)
+        self.mlp      = skip_ffn(in_dim, int(in_dim * 2)) if token_mlp else nn.Identity()
     def forward(self, x1, x2):
         n1   = self.linear(self.norm1(x1))
         n2   = self.linear(self.norm1(x2))
-        attn = self.attn(n1, n2)
-        tx   = attn + x1 if attn.shape == x1.shape else attn
+        attn = self.out_proj(self.attn(n1, n2))
+        tx   = attn + x1
         return self.mlp(self.norm2(tx)) if isinstance(self.mlp, skip_ffn) else tx
 '''
 

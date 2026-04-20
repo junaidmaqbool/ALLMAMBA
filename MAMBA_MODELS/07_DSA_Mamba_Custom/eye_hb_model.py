@@ -17,7 +17,7 @@ It is written to disk automatically if not already present.
 Falls back to MobileNetV3-Small if DSAmamba.py fails to load.
 """
 
-import os, sys, torch, torch.nn as nn
+import os, sys, importlib, shutil, torch, torch.nn as nn
 
 _THIS_DIR   = os.path.dirname(os.path.abspath(__file__))
 _MODEL_DIR  = os.path.join(_THIS_DIR, "model")
@@ -100,23 +100,51 @@ class CrossAttention(nn.Module):
 
 
 def _ensure_cross_attention():
-    """Write cross_attention.py if it is missing."""
+    """Always write the canonical cross_attention.py from the embedded source.
+    This overwrites any stale or incorrect version on disk.
+    """
     ca_path = os.path.join(_MODEL_DIR, "cross_attention.py")
-    if not os.path.exists(ca_path):
-        os.makedirs(_MODEL_DIR, exist_ok=True)
-        with open(ca_path, "w") as f:
-            f.write(_CROSS_ATTENTION_SRC)
-        print("  [DSA-Mamba] cross_attention.py written from embedded source.")
+    os.makedirs(_MODEL_DIR, exist_ok=True)
+    with open(ca_path, "w") as f:
+        f.write(_CROSS_ATTENTION_SRC)
+
+
+def _flush_module_cache():
+    """Remove stale Python module cache entries and __pycache__ bytecode
+    so that build_model() always loads the freshest code from disk.
+    """
+    # 1. Evict any previously imported DSA-Mamba sub-modules from sys.modules
+    stale = [k for k in sys.modules if any(
+        tag in k for tag in ("DSAmamba", "cross_attention", "eye_hb_model",
+                             "model.DSAmamba", "model.cross_attention")
+    )]
+    for k in stale:
+        del sys.modules[k]
+
+    # 2. Delete __pycache__ dirs under the model folder so Python recompiles .py → .pyc
+    for root, dirs, _ in os.walk(_MODEL_DIR):
+        for d in dirs:
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+    pycache = os.path.join(_THIS_DIR, "__pycache__")
+    shutil.rmtree(pycache, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 def build_model(img_size: int = 224):
     """
     Returns DSA-Mamba model with forward(x) -> (logits[B,2], hb_pred[B,1]).
+    Always flushes stale module caches and rewrites cross_attention.py so that
+    changes to source files are picked up even within a live Kaggle kernel.
     """
-    _ensure_cross_attention()
+    _flush_module_cache()      # purge sys.modules + __pycache__ first
+    _ensure_cross_attention()  # (re)write canonical cross_attention.py
 
     try:
+        import model.cross_attention
+        import model.DSAmamba
+        importlib.reload(model.cross_attention)
+        importlib.reload(model.DSAmamba)
         from model.DSAmamba import VSSM as DSA_VSSM
 
         backbone = DSA_VSSM(

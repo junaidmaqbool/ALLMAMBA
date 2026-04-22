@@ -55,7 +55,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, mean_absolute_error
+from sklearn.metrics import accuracy_score, mean_absolute_error, roc_auc_score
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from tqdm import tqdm
@@ -103,7 +103,7 @@ class EyeHBDataset(Dataset):
             img = self.transform(img)
         return (img,
                 torch.tensor(label, dtype=torch.long),
-                torch.tensor([[hb]], dtype=torch.float32))
+                torch.tensor([hb], dtype=torch.float32))   # shape (1,) → (B,) after collate
 
 
 T_TRAIN = transforms.Compose([
@@ -163,17 +163,19 @@ CE_LOSS  = nn.CrossEntropyLoss()
 MSE_LOSS = nn.MSELoss()
 
 def dual_loss(logits, hb_pred, labels, hb_true):
+    # .view(-1) prevents cross-product broadcasting when shapes differ by extra dims
     return (CONFIG["cls_weight"] * CE_LOSS(logits, labels)
-          + CONFIG["reg_weight"] * MSE_LOSS(hb_pred, hb_true))
+          + CONFIG["reg_weight"] * MSE_LOSS(hb_pred.view(-1), hb_true.view(-1)))
 
 
 def run_epoch(model, loader, optimizer=None):
-    """Train (if optimizer given) or evaluate one epoch. Returns loss, acc, mae."""
+    """Train (if optimizer given) or evaluate one epoch.
+    Returns (avg_loss, acc, mae, rmse, auc)."""
     training = optimizer is not None
     model.train() if training else model.eval()
 
     total_loss = correct = total = 0
-    all_hbp, all_hbt = [], []
+    all_hbp, all_hbt, all_probs, all_labels = [], [], [], []
 
     ctx = torch.enable_grad() if training else torch.no_grad()
     with ctx:
@@ -195,13 +197,22 @@ def run_epoch(model, loader, optimizer=None):
             preds       = logits.argmax(1)
             correct    += (preds == labels).sum().item()
             total      += labels.size(0)
-            all_hbp.extend(hb_pred.detach().cpu().squeeze().tolist())
-            all_hbt.extend(hb_true.cpu().squeeze().tolist())
+            probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().tolist()
+            all_probs.extend(probs)
+            all_labels.extend(labels.cpu().tolist())
+            all_hbp.extend(hb_pred.detach().cpu().view(-1).tolist())
+            all_hbt.extend(hb_true.cpu().view(-1).tolist())
 
     avg_loss = total_loss / len(loader)
     acc      = correct / total
     mae      = mean_absolute_error(all_hbt, all_hbp)
-    return avg_loss, acc, mae
+    rmse     = math.sqrt(mean_absolute_error(
+                   [h**2 for h in all_hbt], [h**2 for h in all_hbp]))
+    try:
+        auc = roc_auc_score(all_labels, all_probs)
+    except Exception:
+        auc = float("nan")   # only one class in batch
+    return avg_loss, acc, mae, rmse, auc
 
 
 def smoke_test(name, model):

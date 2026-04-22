@@ -71,7 +71,7 @@ def build_mamba3(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
             d_state=32,       # must be even
             expand=2,
             headdim=headdim,
-            chunk_size=1,
+            chunk_size=64,
         )
 
         class _Mamba3Block(nn.Module):
@@ -80,7 +80,7 @@ def build_mamba3(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
                 super().__init__()
                 h = max(16, d_model // 2)
                 c = Mamba3Config(d_model=d_model, n_layer=1, d_state=32,
-                                 expand=2, headdim=h, chunk_size=1)
+                                 expand=2, headdim=h, chunk_size=64)
                 self.ssm = Mamba3(c)
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:

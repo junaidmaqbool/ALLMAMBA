@@ -114,13 +114,14 @@ class _VisionMambaDual(nn.Module):
     def forward(self, x: torch.Tensor):
         B = x.shape[0]
         x = self.patch_embed(x).flatten(2).transpose(1, 2)           # (B, N, C)
-        x = torch.cat([self.cls_token.expand(B, -1, -1), x], dim=1) # (B, N+1, C)
+        # CLS appended LAST so the causal SSM can attend to all patches before CLS
+        x = torch.cat([x, self.cls_token.expand(B, -1, -1)], dim=1) # (B, N+1, C)
         x = x + self.pos_embed
 
         for norm, blk in zip(self.norms, self.blocks):
             x = x + blk(norm(x))
 
-        feat = self.norm(x)[:, 0]   # CLS token
+        feat = self.norm(x)[:, -1]  # CLS token (last position sees all patches)
         return self.cls_head(feat), self.reg_head(feat)
 
 

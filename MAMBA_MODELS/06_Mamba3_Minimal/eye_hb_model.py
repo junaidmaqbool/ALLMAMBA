@@ -51,17 +51,25 @@ def build_model(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
             def __init__(self, d_model: int):
                 super().__init__()
                 h   = max(16, d_model // 2)
+                self._chunk_size = 64
                 cfg = Mamba3Config(
                     d_model=d_model, n_layer=1, d_state=32,
-                    expand=2, headdim=h, chunk_size=64, use_mimo=False)
+                    expand=2, headdim=h, chunk_size=self._chunk_size, use_mimo=False)
                 self.ssm  = Mamba3(cfg)
                 # NOTE: no self.norm here — _VisionMambaDual's pre-norm already
                 # normalises the input before calling this block (double-norm bug removed)
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
+                import torch.nn.functional as F
+                B, L, D = x.shape
+                # Mamba3 requires seqlen divisible by chunk_size (64).
+                # 224px/16px patches + 1 CLS = 197 (prime) -> pad to next multiple of 64.
+                pad = (-L) % self._chunk_size   # e.g. (-197) % 64 = 59
+                if pad:
+                    x = F.pad(x, (0, 0, 0, pad))   # (B, L+pad, D)
                 # Mamba3.forward(u, h=None) returns (y, cache)
                 y, _ = self.ssm(x)   # x is already layer-normed by _VisionMambaDual
-                return y             # residual added by _VisionMambaDual
+                return y[:, :L]      # trim padding; CLS at position L-1 is preserved
 
         ssm_fn = lambda d: Mamba3Block(d)
         print(f"  [Mamba3] pure-PyTorch Mamba3 blocks loaded from mamba3.py")

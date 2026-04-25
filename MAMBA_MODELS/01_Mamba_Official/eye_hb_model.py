@@ -84,9 +84,17 @@ def build_mamba3(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
                 self.ssm = Mamba3(c)
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
-                # Mamba3.forward(u, h=None) -> (B, L, D)
-                y, _ = self.ssm(x)
-                return y
+                import torch.nn.functional as _F
+                orig_dtype = x.dtype
+                with torch.cuda.amp.autocast(enabled=False):
+                    x = x.float()
+                    B, L, D = x.shape
+                    pad = (-L) % 64
+                    if pad:
+                        x = _F.pad(x, (0, 0, 0, pad))
+                    y, _ = self.ssm(x)
+                    y = y[:, :L]
+                return y.to(orig_dtype)
 
         ssm_fn = lambda d: _Mamba3Block(d)
         print("  [Mamba3] pure-PyTorch Mamba3 block loaded from mamba3.py.")

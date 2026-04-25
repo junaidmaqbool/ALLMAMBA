@@ -60,16 +60,22 @@ def build_model(img_size: int = 224, embed_dim: int = 128, depth: int = 4):
                 # normalises the input before calling this block (double-norm bug removed)
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
-                import torch.nn.functional as F
-                B, L, D = x.shape
-                # Mamba3 requires seqlen divisible by chunk_size (64).
-                # 224px/16px patches + 1 CLS = 197 (prime) -> pad to next multiple of 64.
-                pad = (-L) % self._chunk_size   # e.g. (-197) % 64 = 59
-                if pad:
-                    x = F.pad(x, (0, 0, 0, pad))   # (B, L+pad, D)
-                # Mamba3.forward(u, h=None) returns (y, cache)
-                y, _ = self.ssm(x)   # x is already layer-normed by _VisionMambaDual
-                return y[:, :L]      # trim padding; CLS at position L-1 is preserved
+                import torch.nn.functional as _F
+                orig_dtype = x.dtype
+                # ── AMP guard ────────────────────────────────────────────────
+                # Mamba3 uses A_log (fp32 param) in ops with fp16 AMP tensors
+                # → NaN training loss.  Disable autocast so everything is fp32.
+                with torch.cuda.amp.autocast(enabled=False):
+                    x = x.float()
+                    B, L, D = x.shape
+                    # Mamba3 requires seqlen % chunk_size == 0.
+                    # 224/16 patches + 1 CLS = 197 (prime) → pad to next mult of 64.
+                    pad = (-L) % self._chunk_size
+                    if pad:
+                        x = _F.pad(x, (0, 0, 0, pad))
+                    y, _ = self.ssm(x)
+                    y = y[:, :L]   # trim; CLS token at position L-1 is preserved
+                return y.to(orig_dtype)
 
         ssm_fn = lambda d: Mamba3Block(d)
         print(f"  [Mamba3] pure-PyTorch Mamba3 blocks loaded from mamba3.py")

@@ -55,40 +55,36 @@ class _PureMamba(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, L, D)  ->  (B, L, D)"""
-        # AMP guard: disable autocast so ALL ops (including nn.Linear) run in fp32.
-        # Without this, linear projections output fp16 while A_log parameters stay fp32,
-        # causing "GET was unable to find an engine" on dt*A (fp16 × fp32).
-        orig_dtype = x.dtype
-        with torch.cuda.amp.autocast(enabled=False):
-            x = x.float()
-            B, L, _ = x.shape
-            xz = self.in_proj(x)
-            x_, z = xz.chunk(2, dim=-1)
+        B, L, _ = x.shape
+        xz = self.in_proj(x)
+        x_, z = xz.chunk(2, dim=-1)
 
-            x_ = rearrange(x_, "b l d -> b d l")
-            x_ = self.conv1d(x_)[..., :L]
-            x_ = rearrange(x_, "b d l -> b l d")
-            x_ = self.act(x_)
+        x_ = rearrange(x_, "b l d -> b d l")
+        x_ = self.conv1d(x_)[..., :L]
+        x_ = rearrange(x_, "b d l -> b l d")
+        x_ = self.act(x_)
 
-            bcd = self.x_proj(x_)
-            B_  = bcd[..., : self.d_state]
-            C   = bcd[..., self.d_state : 2 * self.d_state]
-            dt  = F.softplus(self.dt_proj(bcd[..., -1:]))
+        bcd = self.x_proj(x_)
+        B_  = bcd[..., : self.d_state]
+        C   = bcd[..., self.d_state : 2 * self.d_state]
+        dt  = F.softplus(self.dt_proj(bcd[..., -1:]))
 
-            A  = -torch.exp(self.A_log.float())          # fp32
-            dA = torch.exp(dt.unsqueeze(-1) * A)         # fp32 × fp32 — no mixed-dtype error
-            dB = dt.unsqueeze(-1) * B_.unsqueeze(2)
+        # Cast A to the same dtype as dt (fp16 under AMP, fp32 otherwise).
+        # The original .float() forced fp32 always, causing fp16×fp32 mixed-dtype
+        # CUDA errors under autocast. .to(dt.dtype) keeps them consistent.
+        A  = -torch.exp(self.A_log.to(dt.dtype))
+        dA = torch.exp(dt.unsqueeze(-1) * A)         # (B, L, d_inner, d_state)
+        dB = dt.unsqueeze(-1) * B_.unsqueeze(2)      # (B, L, d_inner, d_state)
 
-            h  = torch.zeros(B, self.d_inner, self.d_state,
-                             device=x.device, dtype=torch.float32)
-            ys = []
-            for i in range(L):
-                h = dA[:, i] * h + dB[:, i] * x_[:, i].unsqueeze(-1)
-                ys.append((h * C[:, i].unsqueeze(1)).sum(-1))
+        h  = torch.zeros(B, self.d_inner, self.d_state,
+                         device=x.device, dtype=dt.dtype)
+        ys = []
+        for i in range(L):
+            h = dA[:, i] * h + dB[:, i] * x_[:, i].unsqueeze(-1)
+            ys.append((h * C[:, i].unsqueeze(1)).sum(-1))
 
-            y   = torch.stack(ys, dim=1) + x_ * self.D
-            out = self.out_proj(y * self.act(z))
-        return out.to(orig_dtype)   # restore fp16/bf16 for the rest of the network
+        y = torch.stack(ys, dim=1) + x_ * self.D
+        return self.out_proj(y * self.act(z))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
